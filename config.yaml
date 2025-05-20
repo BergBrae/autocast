@@ -1,0 +1,6 @@
+roku_devices:
+
+  - name: "Office TV"
+    ip_address: "10.0.0.16"
+  - name: "Bedroom TV"
+    ip_address: "10.0.0.205"
