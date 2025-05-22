@@ -1,3 +1,6 @@
 pydantic
-seleniumbase
-webdriver-manager 
+httpx
+PyYAML
+python-dotenv
+# seleniumbase # Not directly used by the core logic we've built, can be removed if only for old script
+# webdriver-manager # Same as above 
