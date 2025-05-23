@@ -141,15 +141,15 @@ roku_devices:
 python -m pytest tests/
 ```
 
-## Production Deployment
+## Deployment
 
-For production, use the nginx configuration:
+For production deployment, simply run:
 
 ```bash
-docker-compose --profile production up -d
+docker-compose up -d
 ```
 
-This will run the API behind an nginx reverse proxy on port 80.
+The API will be available on port 8000.
 
 ## Troubleshooting
 
