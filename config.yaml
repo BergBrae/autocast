@@ -1,5 +1,5 @@
 roku_devices:
-  - name: 'Office TV'
+  - name: 'Office'
     ip_address: '10.0.0.16'
-  - name: 'Bedroom TV'
+  - name: 'Bedroom'
     ip_address: '10.0.0.205'
