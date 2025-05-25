@@ -19,7 +19,8 @@ class VideoRequest(BaseModel):
 class MediaMetadata(BaseModel):
     confirmed_title: str
     year: Optional[int] = None
-    imdb_id: str
+    tmdb_id: Optional[int] = None  # TMDB ID (primary identifier)
+    imdb_id: Optional[str] = None  # IMDb ID (secondary, may not always be available)
     plot: Optional[str] = None
     poster_url: Optional[str] = None
     director: Optional[str] = None

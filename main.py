@@ -15,8 +15,8 @@ from datatypes import (
     VideoSources,
     SearchResult,
 )
-from config_manager import load_config_and_omdb_key
-from omdb_client import get_media_metadata
+from config_manager import load_config_and_tmdb_keys
+from tmdb_client import get_media_metadata
 from video_source_api import VideoSourceAPI
 from roku_caster import cast_to_roku
 
@@ -44,17 +44,25 @@ async def select_roku_device(config: AppConfig) -> Optional[RokuDevice]:
             print("Invalid input. Please enter a number.")
 
 
-async def select_video_stream(streams: List[VideoStream]) -> Optional[VideoStream]:
+async def select_video_stream(
+    streams: List[VideoStream], media_metadata: Optional[MediaMetadata] = None
+) -> Optional[VideoStream]:
     """Allows the user to select a video stream from a list."""
     if not streams:
         print("No video streams found to select from.")
         return None
 
+    # Determine the title to display - prefer TMDB confirmed title over user input
+    display_title = "(Title not specified)"
+    if media_metadata and media_metadata.confirmed_title:
+        display_title = media_metadata.confirmed_title
+    elif streams and streams[0].from_request and streams[0].from_request.title:
+        display_title = streams[0].from_request.title
+
     print("\nAvailable Video Streams:")
     for i, stream in enumerate(streams):
-        title = stream.from_request.title or "(Title not specified in original request)"
         print(
-            f"  {i+1}. {title} - Quality: {stream.quality}, Type: {stream.media_type}, Source: {stream.url[:50]}..."
+            f"  {i+1}. {display_title} - Quality: {stream.quality}, Type: {stream.media_type}, Source: {stream.url[:50]}..."
         )
 
     while True:
@@ -130,14 +138,16 @@ async def main_workflow():
     # 1. Load Configuration
     print("Loading configuration...")
     try:
-        app_config, omdb_api_key = load_config_and_omdb_key()
+        app_config, tmdb_api_key, tmdb_read_access_token = load_config_and_tmdb_keys()
     except Exception as e:
         print(f"Fatal Error: Could not load configuration. {e}")
         return
 
-    if not omdb_api_key:
+    # Use API key if available, otherwise try read access token
+    api_key = tmdb_api_key or tmdb_read_access_token
+    if not api_key:
         print(
-            "Fatal Error: OMDB_API_KEY not found in .env file or .env is missing. Please set it up."
+            "Fatal Error: TMDB API key or read access token not found in .env file or .env is missing. Please set TMDB_API_KEY or TMDB_READ_ACCESS_TOKEN."
         )
         return
 
@@ -177,16 +187,16 @@ async def main_workflow():
     )
 
     async with httpx.AsyncClient(timeout=20.0) as client:
-        # 3. Get MediaMetadata from OMDb
-        print("\nFetching metadata from OMDb...")
-        media_info = await get_media_metadata(omdb_api_key, video_req, client)
+        # 3. Get MediaMetadata from TMDB
+        print("\nFetching metadata from TMDB...")
+        media_info = await get_media_metadata(api_key, video_req, client)
 
         if not media_info:
-            print("Could not retrieve movie information from OMDb. Exiting.")
+            print("Could not retrieve movie information from TMDB. Exiting.")
             return
 
         print(
-            f"Successfully fetched OMDb Metadata for: '{media_info.confirmed_title}' ({media_info.imdb_id})"
+            f"Successfully fetched TMDB Metadata for: '{media_info.confirmed_title}' (TMDB ID: {media_info.tmdb_id}, IMDb ID: {media_info.imdb_id})"
         )
         print(f"  Year: {media_info.year}")
         print(f"  Director: {media_info.director}")
@@ -279,7 +289,7 @@ async def main_workflow():
             return
 
         # 5. User Selects Stream
-        selected_stream = await select_video_stream(real_streams)
+        selected_stream = await select_video_stream(real_streams, media_info)
         if not selected_stream:
             print("No video stream selected. Exiting.")
             return
@@ -291,7 +301,7 @@ async def main_workflow():
         # 6. Cast to Roku
         print(f"\nPreparing to cast to {target_device.name}...")
         cast_successful = await cast_to_roku(
-            selected_stream, target_device, app_config, client
+            selected_stream, target_device, app_config, client, media_info
         )
 
         if cast_successful:

@@ -47,7 +47,7 @@ class XPrimeStreamAPI(VideoSourceAPI, ABC):
         Searches for movie streams on xprime.tv based on the movie title.
 
         Args:
-            metadata: A MediaMetadata object containing movie information from OMDb.
+            metadata: A MediaMetadata object containing movie information from TMDB.
             original_request: The original VideoRequest that initiated the search.
 
         Returns:
@@ -56,7 +56,7 @@ class XPrimeStreamAPI(VideoSourceAPI, ABC):
         streams = []
         search_results = []
 
-        # Use the confirmed title from OMDb for the search
+        # Use the confirmed title from TMDB for the search
         movie_name = metadata.confirmed_title
         params = {"name": movie_name}
 
@@ -272,14 +272,14 @@ class XPrimeBackendAPI(XPrimeStreamAPI):
 # Example usage for testing
 if __name__ == "__main__":
     import asyncio
-    from config_manager import load_config_and_omdb_key
-    from omdb_client import get_media_metadata
+    from config_manager import load_config_and_tmdb_keys
+    from tmdb_client import get_media_metadata
 
     async def test_all_xprime_apis():
         print("--- Testing All XPrime Stream APIs ---")
 
         try:
-            config, omdb_api_key = load_config_and_omdb_key()
+            config, tmdb_api_key, tmdb_read_access_token = load_config_and_tmdb_keys()
         except Exception as e:
             print(f"Error loading config: {e}")
             return
@@ -293,21 +293,21 @@ if __name__ == "__main__":
         print(f"Testing: {test_title} ({test_year}) - {test_description}")
         print(f"{'='*60}")
 
-        if omdb_api_key:
-            # Get real metadata from OMDb
+        # Use API key if available, otherwise try read access token
+        api_key = tmdb_api_key or tmdb_read_access_token
+        if api_key:
+            # Get real metadata from TMDB
             async with httpx.AsyncClient() as client:
                 test_request = VideoRequest(
                     title=test_title, year=test_year, destination_tv="any"
                 )
-                test_metadata = await get_media_metadata(
-                    omdb_api_key, test_request, client
-                )
+                test_metadata = await get_media_metadata(api_key, test_request, client)
 
                 if not test_metadata:
-                    print(f"Failed to get metadata from OMDb for {test_title}")
+                    print(f"Failed to get metadata from TMDB for {test_title}")
                     return
         else:
-            print("OMDb API key not found. Exiting test.")
+            print("TMDB API key or read access token not found. Exiting test.")
             return
 
         # Test all three XPrime API variants

@@ -26,7 +26,7 @@ class VideoSourceAPI(ABC):
         Searches for video streams based on the provided media metadata.
 
         Args:
-            metadata: A MediaMetadata object containing information about the desired video (e.g., from OMDb).
+            metadata: A MediaMetadata object containing information about the desired video (e.g., from TMDB).
             original_request: The original VideoRequest that initiated the search.
 
         Returns:

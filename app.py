@@ -17,8 +17,8 @@ from datatypes import (
     VideoSources,
     SearchResult,
 )
-from config_manager import load_config_and_omdb_key
-from omdb_client import get_media_metadata
+from config_manager import load_config_and_tmdb_keys
+from tmdb_client import get_media_metadata
 from video_source_api import VideoSourceAPI
 from roku_caster import cast_to_roku
 
@@ -40,7 +40,7 @@ app.add_middleware(
 
 # Global variables for config and HTTP client
 app_config: Optional[AppConfig] = None
-omdb_api_key: Optional[str] = None
+tmdb_api_key: Optional[str] = None
 http_client: Optional[httpx.AsyncClient] = None
 video_source_apis: List[VideoSourceAPI] = []
 
@@ -136,12 +136,13 @@ def load_video_source_apis(
 @app.on_event("startup")
 async def startup_event():
     """Initialize configuration and HTTP client on startup."""
-    global app_config, omdb_api_key, http_client, video_source_apis
+    global app_config, tmdb_api_key, http_client, video_source_apis
 
     try:
-        app_config, omdb_api_key = load_config_and_omdb_key()
-        if not omdb_api_key:
-            print("Warning: OMDB_API_KEY not found in .env file")
+        app_config, api_key, read_access_token = load_config_and_tmdb_keys()
+        tmdb_api_key = api_key or read_access_token
+        if not tmdb_api_key:
+            print("Warning: TMDB API key or read access token not found in .env file")
 
         http_client = httpx.AsyncClient(timeout=20.0)
         video_source_apis = load_video_source_apis(app_config, http_client)
@@ -167,7 +168,7 @@ async def health_check():
     """Health check endpoint."""
     return {
         "status": "healthy",
-        "omdb_api_configured": omdb_api_key is not None,
+        "tmdb_api_configured": tmdb_api_key is not None,
         "roku_devices_count": len(app_config.roku_devices) if app_config else 0,
         "video_source_apis_count": len(video_source_apis),
     }
@@ -188,8 +189,8 @@ async def get_devices():
 @app.post("/search", response_model=SearchResponse)
 async def search_movie(request: SearchRequest):
     """Search for a movie and return metadata and available streams."""
-    if not omdb_api_key:
-        raise HTTPException(status_code=500, detail="OMDB API key not configured")
+    if not tmdb_api_key:
+        raise HTTPException(status_code=500, detail="TMDB API key not configured")
 
     if not request.title and not request.imdb_id:
         raise HTTPException(
@@ -204,10 +205,10 @@ async def search_movie(request: SearchRequest):
         destination_tv="api_search",  # Dummy value for search
     )
 
-    # Get metadata from OMDb
-    metadata = await get_media_metadata(omdb_api_key, video_req, http_client)
+    # Get metadata from TMDB
+    metadata = await get_media_metadata(tmdb_api_key, video_req, http_client)
     if not metadata:
-        raise HTTPException(status_code=404, detail="Movie not found in OMDb database")
+        raise HTTPException(status_code=404, detail="Movie not found in TMDB database")
 
     # Search for streams using all available APIs
     all_streams = []
@@ -264,8 +265,8 @@ async def search_movie(request: SearchRequest):
 @app.post("/cast", response_model=CastResponse)
 async def cast_movie(request: CastRequest):
     """Cast a movie to a Roku device."""
-    if not omdb_api_key:
-        raise HTTPException(status_code=500, detail="OMDB API key not configured")
+    if not tmdb_api_key:
+        raise HTTPException(status_code=500, detail="TMDB API key not configured")
 
     if not request.title and not request.imdb_id:
         raise HTTPException(
@@ -296,10 +297,10 @@ async def cast_movie(request: CastRequest):
         destination_tv=target_device.name,
     )
 
-    # Get metadata from OMDb
-    metadata = await get_media_metadata(omdb_api_key, video_req, http_client)
+    # Get metadata from TMDB
+    metadata = await get_media_metadata(tmdb_api_key, video_req, http_client)
     if not metadata:
-        raise HTTPException(status_code=404, detail="Movie not found in OMDb database")
+        raise HTTPException(status_code=404, detail="Movie not found in TMDB database")
 
     # Search for streams using all available APIs
     all_streams = []
@@ -384,8 +385,8 @@ async def cast_movie_background(
     background_tasks: BackgroundTasks, request: CastRequest
 ):
     """Cast a movie to a Roku device in the background."""
-    if not omdb_api_key:
-        raise HTTPException(status_code=500, detail="OMDB API key not configured")
+    if not tmdb_api_key:
+        raise HTTPException(status_code=500, detail="TMDB API key not configured")
 
     if not request.title and not request.imdb_id:
         raise HTTPException(
@@ -413,7 +414,7 @@ async def cast_movie_background(
         perform_background_cast,
         request,
         target_device,
-        omdb_api_key,
+        tmdb_api_key,
         http_client,
         video_source_apis,
     )
@@ -428,7 +429,7 @@ async def cast_movie_background(
 async def perform_background_cast(
     request: CastRequest,
     target_device: RokuDevice,
-    omdb_key: str,
+    tmdb_key: str,
     client: httpx.AsyncClient,
     apis: List[VideoSourceAPI],
 ):
@@ -446,10 +447,10 @@ async def perform_background_cast(
             destination_tv=target_device.name,
         )
 
-        # Get metadata from OMDb
-        metadata = await get_media_metadata(omdb_key, video_req, client)
+        # Get metadata from TMDB
+        metadata = await get_media_metadata(tmdb_key, video_req, client)
         if not metadata:
-            print(f"[Background Cast] Failed to get metadata from OMDb")
+            print(f"[Background Cast] Failed to get metadata from TMDB")
             return
 
         # Search for streams
