@@ -81,6 +81,9 @@ def load_video_source_apis(
     config: AppConfig, client: httpx.AsyncClient
 ) -> List[VideoSourceAPI]:
     """Dynamically loads all VideoSourceAPI implementations from the source_apis directory."""
+    import inspect
+    from abc import ABC
+
     source_apis_path = Path(__file__).parent / "source_apis"
     loaded_apis: List[VideoSourceAPI] = []
 
@@ -97,13 +100,27 @@ def load_video_source_apis(
                         isinstance(attribute, type)
                         and issubclass(attribute, VideoSourceAPI)
                         and attribute is not VideoSourceAPI
+                        and not inspect.isabstract(attribute)  # Skip abstract classes
                     ):
                         try:
-                            instance = attribute(config=config, client=client)
-                            print(
-                                f"  Successfully loaded and initialized: {instance.name}"
-                            )
-                            loaded_apis.append(instance)
+                            # Check if the constructor requires only config and client
+                            sig = inspect.signature(attribute.__init__)
+                            params = list(sig.parameters.keys())
+                            # Remove 'self' parameter
+                            if "self" in params:
+                                params.remove("self")
+
+                            # Only instantiate if it takes exactly config and client parameters
+                            if set(params) == {"config", "client"}:
+                                instance = attribute(config=config, client=client)
+                                print(
+                                    f"  Successfully loaded and initialized: {instance.name}"
+                                )
+                                loaded_apis.append(instance)
+                            else:
+                                print(
+                                    f"  Skipping {attribute_name}: requires parameters {params} (expected: config, client)"
+                                )
                         except Exception as e:
                             print(
                                 f"  Error initializing API {attribute_name} from {module_name}: {e}"

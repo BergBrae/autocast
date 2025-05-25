@@ -269,6 +269,224 @@ class XPrimeBackendAPI(XPrimeStreamAPI):
         super().__init__(config, client, "https://backend.xprime.tv/primebox")
 
 
+class XPrimePrimenetAPI(VideoSourceAPI, ABC):
+    """XPrime API using the backend.xprime.tv/primenet endpoint with TMDB ID."""
+
+    def __init__(self, config: AppConfig, client: httpx.AsyncClient):
+        """
+        Initialize the XPrime Primenet API.
+
+        Args:
+            config: The application configuration
+            client: The httpx client for making requests
+        """
+        super().__init__(config, client)
+        self.base_url = "https://backend.xprime.tv/primenet"
+
+    @property
+    def name(self) -> str:
+        return "XPrime Primenet Movie Streamer"
+
+    async def search_streams(
+        self, metadata: MediaMetadata, original_request: VideoRequest
+    ) -> VideoSources:
+        """
+        Searches for movie streams on xprime.tv primenet endpoint using TMDB ID.
+
+        Args:
+            metadata: A MediaMetadata object containing movie information from TMDB.
+            original_request: The original VideoRequest that initiated the search.
+
+        Returns:
+            A VideoSources object containing found streams and detailed search results.
+        """
+        streams = []
+        search_results = []
+
+        # Check if we have a TMDB ID
+        if not metadata.tmdb_id:
+            error_message = "No TMDB ID available for primenet search"
+            print(f"[{self.name}] {error_message}")
+            search_results.append(
+                self.create_search_result(
+                    success=False,
+                    streams_found=0,
+                    message=error_message,
+                    status="NO_TMDB_ID",
+                )
+            )
+            return VideoSources(sources=streams, search_results=search_results)
+
+        movie_name = metadata.confirmed_title
+        year_info = f" ({metadata.year})" if metadata.year else ""
+        print(
+            f"[{self.name}] Searching for streams for: '{movie_name}{year_info}' (TMDB ID: {metadata.tmdb_id})"
+        )
+
+        params = {"id": metadata.tmdb_id}
+
+        try:
+            response = await self.client.get(self.base_url, params=params, timeout=15.0)
+            response.raise_for_status()
+            data = response.json()
+
+            # Check if we got a URL in the response
+            if "url" in data and data["url"]:
+                stream_url = data["url"]
+                print(f"[{self.name}] Found stream URL: {stream_url[:60]}...")
+
+                # Try to determine media type from URL
+                media_type = self._get_media_type_from_url(stream_url)
+
+                # Since this endpoint doesn't specify quality, we'll assume it's the best available
+                quality = "HD"  # Default quality since primenet doesn't specify
+
+                streams.append(
+                    VideoStream(
+                        url=stream_url,
+                        media_type=media_type,
+                        quality=quality,
+                        from_request=original_request,
+                    )
+                )
+
+                # Create successful search result
+                search_results.append(
+                    self.create_search_result(
+                        success=True,
+                        streams_found=1,
+                        message=f"Successfully found stream for TMDB ID {metadata.tmdb_id}",
+                        status="ok",
+                    )
+                )
+            else:
+                # No URL found in response
+                print(
+                    f"[{self.name}] No stream URL found in response for TMDB ID {metadata.tmdb_id}"
+                )
+
+                # Create detailed search result for no streams found
+                error_message = f"No stream URL found for TMDB ID {metadata.tmdb_id}"
+                if data:
+                    error_message += f". Response: {data}"
+
+                search_results.append(
+                    self.create_search_result(
+                        success=False,
+                        streams_found=0,
+                        message=error_message,
+                        status="NO_URL_FOUND",
+                        error_details=f"API returned: {data}" if data else None,
+                    )
+                )
+
+        except httpx.HTTPStatusError as e:
+            error_message = f"HTTP {e.response.status_code} error"
+            error_details = (
+                f"Response: {e.response.text[:200]}"
+                if e.response.text
+                else "No response body"
+            )
+
+            if e.response.status_code == 404:
+                error_message = (
+                    f"Movie not found for TMDB ID {metadata.tmdb_id} (HTTP 404)"
+                )
+                print(f"[{self.name}] Movie not found for TMDB ID {metadata.tmdb_id}")
+            elif e.response.status_code == 429:
+                error_message = "Rate limited (HTTP 429). Try again in a few seconds"
+                error_details += ". Note: xprime.tv has rate limiting. Consider waiting between requests."
+                print(
+                    f"[{self.name}] Rate limited (HTTP 429). Try again in a few seconds."
+                )
+            else:
+                print(f"[{self.name}] HTTP error occurred: {e.response.status_code}")
+
+            if e.response.text:
+                print(f"[{self.name}] Response: {e.response.text[:200]}")
+
+            search_results.append(
+                self.create_search_result(
+                    success=False,
+                    streams_found=0,
+                    message=error_message,
+                    status=f"HTTP_{e.response.status_code}",
+                    error_details=error_details,
+                )
+            )
+
+        except httpx.RequestError as e:
+            error_message = f"Request error: {str(e)}"
+            print(f"[{self.name}] Request error occurred: {e}")
+
+            search_results.append(
+                self.create_search_result(
+                    success=False,
+                    streams_found=0,
+                    message=error_message,
+                    status="REQUEST_ERROR",
+                    error_details=str(e),
+                )
+            )
+
+        except Exception as e:
+            error_message = f"Unexpected error: {str(e)}"
+            print(f"[{self.name}] Unexpected error: {e}")
+
+            search_results.append(
+                self.create_search_result(
+                    success=False,
+                    streams_found=0,
+                    message=error_message,
+                    status="UNKNOWN_ERROR",
+                    error_details=str(e),
+                )
+            )
+
+        return VideoSources(sources=streams, search_results=search_results)
+
+    def _get_media_type_from_url(self, url: str) -> str:
+        """
+        Attempts to derive the media type from the URL.
+
+        Args:
+            url: The stream URL
+
+        Returns:
+            The media type (e.g., 'mp4', 'mkv'), defaults to 'mp4'
+        """
+        try:
+            # Remove query parameters
+            path_part = url.split("?")[0].lower()
+
+            # Check for common video extensions
+            video_extensions = [
+                "mp4",
+                "mkv",
+                "avi",
+                "mov",
+                "wmv",
+                "flv",
+                "webm",
+                "m3u8",
+            ]
+
+            for ext in video_extensions:
+                if path_part.endswith(f".{ext}"):
+                    return ext
+
+            # Check if extension is in the path
+            if "." in path_part:
+                potential_ext = path_part.split(".")[-1]
+                if len(potential_ext) <= 4 and potential_ext.isalnum():
+                    return potential_ext
+        except:
+            pass
+
+        # Default to mp4 if unable to determine
+        return "mp4"
+
+
 # Example usage for testing
 if __name__ == "__main__":
     import asyncio
@@ -310,8 +528,8 @@ if __name__ == "__main__":
             print("TMDB API key or read access token not found. Exiting test.")
             return
 
-        # Test all three XPrime API variants
-        api_classes = [XPrimeMainAPI, XPrimeBackendAPI]
+        # Test all XPrime API variants
+        api_classes = [XPrimeMainAPI, XPrimeBackendAPI, XPrimePrimenetAPI]
 
         async with httpx.AsyncClient() as client:
             for api_class in api_classes:

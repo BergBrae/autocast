@@ -11,6 +11,77 @@ from datatypes import VideoStream, RokuDevice, AppConfig
 MEDIA_ASSISTANT_CHANNEL_ID = "782875"
 
 
+async def check_roku_responsive(device: RokuDevice, client: httpx.AsyncClient) -> bool:
+    """
+    Check if the Roku device is responsive (powered on and ready).
+
+    Args:
+        device: The RokuDevice to check.
+        client: An httpx.AsyncClient for making requests.
+
+    Returns:
+        True if the device is responsive, False otherwise.
+    """
+    try:
+        response = await client.get(
+            f"http://{device.ip_address}:8060/query/device-info", timeout=3.0
+        )
+        return response.status_code == 200
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.RequestError):
+        return False
+
+
+async def power_on_roku(device: RokuDevice, client: httpx.AsyncClient) -> bool:
+    """
+    Send a power-on command to the Roku device.
+
+    Args:
+        device: The RokuDevice to power on.
+        client: An httpx.AsyncClient for making requests.
+
+    Returns:
+        True if the power-on command was sent successfully, False otherwise.
+    """
+    try:
+        power_url = f"http://{device.ip_address}:8060/keypress/PowerOn"
+        response = await client.post(power_url, timeout=5.0)
+        return response.status_code in [200, 202]
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.RequestError):
+        return False
+
+
+async def wait_for_roku_ready(
+    device: RokuDevice, client: httpx.AsyncClient, max_wait_time: int = 30
+) -> bool:
+    """
+    Wait for the Roku device to become responsive after powering on.
+
+    Args:
+        device: The RokuDevice to wait for.
+        client: An httpx.AsyncClient for making requests.
+        max_wait_time: Maximum time to wait in seconds.
+
+    Returns:
+        True if the device becomes responsive, False if timeout.
+    """
+    print(f"  Waiting for {device.name} to boot up...")
+
+    for attempt in range(max_wait_time):
+        await asyncio.sleep(1)
+        if await check_roku_responsive(device, client):
+            print(f"  {device.name} is now responsive (took {attempt + 1} seconds)")
+            return True
+
+        # Show progress every 5 seconds
+        if (attempt + 1) % 5 == 0:
+            print(f"  Still waiting... ({attempt + 1}/{max_wait_time} seconds)")
+
+    print(
+        f"  Timeout: {device.name} did not become responsive within {max_wait_time} seconds"
+    )
+    return False
+
+
 async def cast_to_roku(
     stream: VideoStream,
     device: RokuDevice,
@@ -22,7 +93,8 @@ async def cast_to_roku(
     Casts a video stream to a Roku device using Media Assistant.
 
     Uses Roku's External Control Protocol (ECP) to launch Media Assistant
-    and pass the stream URL.
+    and pass the stream URL. Handles the case where the TV is powered off
+    by first powering it on and waiting for it to boot up.
 
     Args:
         stream: The VideoStream object to cast.
@@ -47,6 +119,33 @@ async def cast_to_roku(
     print(f"  Stream URL: {stream.url}")
     print(f"  Media Type: {stream.media_type}")
     print(f"  Quality: {stream.quality}")
+
+    # Check if the Roku is responsive (powered on)
+    print(f"  Checking if {device.name} is responsive...")
+    is_responsive = await check_roku_responsive(device, client)
+
+    if not is_responsive:
+        print(f"  {device.name} appears to be powered off or in deep sleep")
+        print(f"  Attempting to power on {device.name}...")
+
+        power_on_success = await power_on_roku(device, client)
+        if not power_on_success:
+            print(f"  Failed to send power-on command to {device.name}")
+            return False
+
+        print(f"  Power-on command sent successfully")
+
+        # Wait for the TV to boot up and become responsive
+        ready = await wait_for_roku_ready(device, client, max_wait_time=30)
+        if not ready:
+            print(f"  {device.name} did not become responsive after power-on")
+            print(f"  This could be due to:")
+            print(f"    - TV taking longer than expected to boot")
+            print(f"    - Network connectivity issues")
+            print(f"    - TV not supporting remote power-on")
+            return False
+    else:
+        print(f"  {device.name} is already powered on and responsive")
 
     # Roku ECP endpoint for launching Media Assistant
     launch_url = f"http://{device.ip_address}:8060/launch/{MEDIA_ASSISTANT_CHANNEL_ID}"
