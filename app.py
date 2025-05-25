@@ -105,6 +105,9 @@ def load_video_source_apis(
     config: AppConfig, client: httpx.AsyncClient
 ) -> List[VideoSourceAPI]:
     """Dynamically loads all VideoSourceAPI implementations from the source_apis directory."""
+    import inspect
+    from abc import ABC
+
     source_apis_path = Path(__file__).parent / "source_apis"
     loaded_apis: List[VideoSourceAPI] = []
 
@@ -119,10 +122,24 @@ def load_video_source_apis(
                         isinstance(attribute, type)
                         and issubclass(attribute, VideoSourceAPI)
                         and attribute is not VideoSourceAPI
+                        and not inspect.isabstract(attribute)  # Skip abstract classes
                     ):
                         try:
-                            instance = attribute(config=config, client=client)
-                            loaded_apis.append(instance)
+                            # Check if the constructor requires only config and client
+                            sig = inspect.signature(attribute.__init__)
+                            params = list(sig.parameters.keys())
+                            # Remove 'self' parameter
+                            if "self" in params:
+                                params.remove("self")
+
+                            # Only instantiate if it takes exactly config and client parameters
+                            if set(params) == {"config", "client"}:
+                                instance = attribute(config=config, client=client)
+                                loaded_apis.append(instance)
+                            else:
+                                print(
+                                    f"Skipping {attribute_name}: requires parameters {params} (expected: config, client)"
+                                )
                         except Exception as e:
                             print(
                                 f"Error initializing API {attribute_name} from {module_name}: {e}"
@@ -224,7 +241,7 @@ async def search_movie(request: SearchRequest):
                         url=stream.url,
                         media_type=stream.media_type,
                         quality=stream.quality,
-                        source_api=api_instance.name,
+                        source_api=stream.source_api,
                     )
                 )
 
@@ -359,7 +376,7 @@ async def cast_movie(request: CastRequest):
         url=selected_stream.url,
         media_type=selected_stream.media_type,
         quality=selected_stream.quality,
-        source_api="multiple",  # Could be improved to track which API provided the stream
+        source_api=selected_stream.source_api,
     )
 
     if success:

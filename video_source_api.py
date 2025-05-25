@@ -99,7 +99,8 @@ class VideoSourceAPI(ABC):
 #                     url=dummy_url,
 #                     media_type="mp4",
 #                     quality="1080p",
-#                     from_request=original_request
+#                     from_request=original_request,
+#                     source_api=self.name
 #                 )
 #             )
 #             search_results.append(self.create_search_result(True, 1, "Successfully found stream"))

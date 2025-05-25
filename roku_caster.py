@@ -228,6 +228,7 @@ async def main():
         media_type="mp4",
         quality="1080p",
         from_request=test_video_request,
+        source_api="Test API",
     )
 
     async with httpx.AsyncClient() as client:

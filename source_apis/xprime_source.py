@@ -93,6 +93,7 @@ class XPrimeStreamAPI(VideoSourceAPI, ABC):
                                 media_type=media_type,
                                 quality=quality,
                                 from_request=original_request,
+                                source_api=self.name,
                             )
                         )
                         print(
@@ -109,6 +110,7 @@ class XPrimeStreamAPI(VideoSourceAPI, ABC):
                                 media_type=media_type,
                                 quality=quality,
                                 from_request=original_request,
+                                source_api=self.name,
                             )
                         )
                         print(f"[{self.name}] Added {quality} stream: {url[:60]}...")
@@ -347,6 +349,7 @@ class XPrimePrimenetAPI(VideoSourceAPI, ABC):
                         media_type=media_type,
                         quality=quality,
                         from_request=original_request,
+                        source_api=self.name,
                     )
                 )
 

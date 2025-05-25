@@ -35,6 +35,7 @@ class VideoStream(BaseModel):
     media_type: str  # Type of media to be sent to the Roku device. Ex. mp4, m3u8, etc.
     quality: str  # Quality of the video to be sent to the Roku device. Ex. 1080p, 720p, 480p, etc.
     from_request: VideoRequest  # Request that was used to find the video stream.
+    source_api: str  # Name of the API that provided this stream.
 
 
 class SearchResult(BaseModel):
