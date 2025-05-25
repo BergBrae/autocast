@@ -3,3 +3,5 @@ roku_devices:
     ip_address: '10.0.0.16'
   - name: 'Bedroom'
     ip_address: '10.0.0.205'
+  - name: 'Living Room'
+    ip_address: '10.0.0.166'
