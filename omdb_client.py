@@ -91,11 +91,11 @@ async def main():
 
     # Example movie requests
     test_movies = [
-        VideoRequest(title="The Matrix", destination_tv="any", year=1999),
-        VideoRequest(imdb_id="tt0133093", destination_tv="any"),  # The Matrix by IMDb ID
-        VideoRequest(title="Inception", destination_tv="any", year=2010),
-        VideoRequest(title="The Shawshank Redemption", destination_tv="any"),
-        VideoRequest(title="NonExistent Movie", destination_tv="any", year=2077),
+        # VideoRequest(title="The Matrix", destination_tv="any", year=1999),
+        # VideoRequest(imdb_id="tt0133093", destination_tv="any"),  # The Matrix by IMDb ID
+        # VideoRequest(title="Inception", destination_tv="any", year=2010),
+        # VideoRequest(title="The Shawshank Redemption", destination_tv="any"),
+        VideoRequest(title="Split", destination_tv="any"),
     ]
 
     async with httpx.AsyncClient() as client:

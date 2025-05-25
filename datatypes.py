@@ -1,5 +1,5 @@
 from pydantic import BaseModel, root_validator
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 
 class VideoRequest(BaseModel):
@@ -36,8 +36,20 @@ class VideoStream(BaseModel):
     from_request: VideoRequest  # Request that was used to find the video stream.
 
 
+class SearchResult(BaseModel):
+    """Represents the result of a search operation from a video source API."""
+
+    api_name: str  # Name of the API that performed the search
+    success: bool  # Whether the search was successful
+    streams_found: int  # Number of streams found
+    message: Optional[str] = None  # Message from the API (error message, status, etc.)
+    status: Optional[str] = None  # API status if available
+    error_details: Optional[str] = None  # Additional error details if any
+
+
 class VideoSources(BaseModel):
-    sources: list[VideoStream]  # List of video streams to be sent to the Roku device.
+    sources: List[VideoStream]  # List of video streams to be sent to the Roku device.
+    search_results: List[SearchResult] = []  # Results from each API search attempt
 
 
 class RokuDevice(BaseModel):

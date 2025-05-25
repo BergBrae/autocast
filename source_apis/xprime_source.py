@@ -2,19 +2,43 @@ import sys
 
 sys.path.append("..")  # Add parent directory to path for imports
 
+from abc import ABC
 from video_source_api import VideoSourceAPI
-from datatypes import MediaMetadata, VideoStream, VideoSources, AppConfig, VideoRequest
+from datatypes import (
+    MediaMetadata,
+    VideoStream,
+    VideoSources,
+    AppConfig,
+    VideoRequest,
+    SearchResult,
+)
 import httpx
 import asyncio
 from typing import Dict, Any
 
 
-class XPrimeStreamAPI(VideoSourceAPI):
-    """Video source API that searches for movie streams on xprime.tv."""
+class XPrimeStreamAPI(VideoSourceAPI, ABC):
+    """Base video source API that searches for movie streams on xprime.tv endpoints."""
+
+    def __init__(self, config: AppConfig, client: httpx.AsyncClient, base_url: str):
+        """
+        Initialize the XPrime API with a configurable base URL.
+
+        Args:
+            config: The application configuration
+            client: The httpx client for making requests
+            base_url: The base URL for the XPrime API endpoint
+        """
+        super().__init__(config, client)
+        self.base_url = base_url
 
     @property
     def name(self) -> str:
-        return "XPrime.tv Movie Streamer"
+        # Extract the domain from the base_url to make the name more descriptive
+        domain = (
+            self.base_url.replace("https://", "").replace("http://", "").split("/")[0]
+        )
+        return f"XPrime ({domain}) Movie Streamer"
 
     async def search_streams(
         self, metadata: MediaMetadata, original_request: VideoRequest
@@ -27,13 +51,13 @@ class XPrimeStreamAPI(VideoSourceAPI):
             original_request: The original VideoRequest that initiated the search.
 
         Returns:
-            A VideoSources object containing found streams.
+            A VideoSources object containing found streams and detailed search results.
         """
         streams = []
+        search_results = []
 
         # Use the confirmed title from OMDb for the search
         movie_name = metadata.confirmed_title
-        base_url = "https://xprime.tv/primebox"
         params = {"name": movie_name}
 
         # Add year to the search if available
@@ -44,7 +68,7 @@ class XPrimeStreamAPI(VideoSourceAPI):
         print(f"[{self.name}] Searching for streams for: '{movie_name}{year_info}'")
 
         try:
-            response = await self.client.get(base_url, params=params, timeout=15.0)
+            response = await self.client.get(self.base_url, params=params, timeout=15.0)
             response.raise_for_status()
             data = response.json()
 
@@ -88,15 +112,54 @@ class XPrimeStreamAPI(VideoSourceAPI):
                             )
                         )
                         print(f"[{self.name}] Added {quality} stream: {url[:60]}...")
+
+                # Create successful search result
+                search_results.append(
+                    self.create_search_result(
+                        success=True,
+                        streams_found=len(streams),
+                        message=f"Successfully found {len(streams)} stream(s) in qualities: {', '.join(available_streams.keys())}",
+                        status=data.get("status", "ok"),
+                    )
+                )
             else:
+                # No streams found - capture detailed information
                 print(f"[{self.name}] No streams found for '{movie_name}'")
-                if data.get("status") != "ok":
-                    print(f"[{self.name}] API status: {data.get('status', 'unknown')}")
+
+                api_status = data.get("status", "unknown")
+                api_message = data.get("message", "No streams available")
+
+                if api_status != "ok":
+                    print(f"[{self.name}] API status: {api_status}")
                 if data.get("message"):
                     print(f"[{self.name}] API message: {data.get('message')}")
 
+                # Create detailed search result for no streams found
+                detailed_message = f"No streams found for '{movie_name}'"
+                if api_message and api_message != "No streams available":
+                    detailed_message += f". API message: {api_message}"
+
+                search_results.append(
+                    self.create_search_result(
+                        success=False,
+                        streams_found=0,
+                        message=detailed_message,
+                        status=api_status,
+                        error_details=f"API returned: {data}" if data else None,
+                    )
+                )
+
         except httpx.HTTPStatusError as e:
+            error_message = f"HTTP {e.response.status_code} error"
+            error_details = (
+                f"Response: {e.response.text[:200]}"
+                if e.response.text
+                else "No response body"
+            )
+
             if e.response.status_code == 429:
+                error_message = "Rate limited (HTTP 429). Try again in a few seconds"
+                error_details += ". Note: xprime.tv has rate limiting. Consider waiting between requests."
                 print(
                     f"[{self.name}] Rate limited (HTTP 429). Try again in a few seconds."
                 )
@@ -105,14 +168,49 @@ class XPrimeStreamAPI(VideoSourceAPI):
                 )
             else:
                 print(f"[{self.name}] HTTP error occurred: {e.response.status_code}")
+
             if e.response.text:
                 print(f"[{self.name}] Response: {e.response.text[:200]}")
+
+            search_results.append(
+                self.create_search_result(
+                    success=False,
+                    streams_found=0,
+                    message=error_message,
+                    status=f"HTTP_{e.response.status_code}",
+                    error_details=error_details,
+                )
+            )
+
         except httpx.RequestError as e:
+            error_message = f"Request error: {str(e)}"
             print(f"[{self.name}] Request error occurred: {e}")
+
+            search_results.append(
+                self.create_search_result(
+                    success=False,
+                    streams_found=0,
+                    message=error_message,
+                    status="REQUEST_ERROR",
+                    error_details=str(e),
+                )
+            )
+
         except Exception as e:
+            error_message = f"Unexpected error: {str(e)}"
             print(f"[{self.name}] Unexpected error: {e}")
 
-        return VideoSources(sources=streams)
+            search_results.append(
+                self.create_search_result(
+                    success=False,
+                    streams_found=0,
+                    message=error_message,
+                    status="UNKNOWN_ERROR",
+                    error_details=str(e),
+                )
+            )
+
+        return VideoSources(sources=streams, search_results=search_results)
 
     def _get_media_type_from_url(self, url: str) -> str:
         """
@@ -156,14 +254,29 @@ class XPrimeStreamAPI(VideoSourceAPI):
         return "mp4"
 
 
+# Multiple XPrime API variants for different endpoints
+class XPrimeMainAPI(XPrimeStreamAPI):
+    """XPrime API using the main xprime.tv endpoint."""
+
+    def __init__(self, config: AppConfig, client: httpx.AsyncClient):
+        super().__init__(config, client, "https://xprime.tv/primebox")
+
+
+class XPrimeBackendAPI(XPrimeStreamAPI):
+    """XPrime API using the backend.xprime.tv endpoint."""
+
+    def __init__(self, config: AppConfig, client: httpx.AsyncClient):
+        super().__init__(config, client, "https://backend.xprime.tv/primebox")
+
+
 # Example usage for testing
 if __name__ == "__main__":
     import asyncio
     from config_manager import load_config_and_omdb_key
     from omdb_client import get_media_metadata
 
-    async def test_xprime():
-        print("--- Testing XPrime Stream API ---")
+    async def test_all_xprime_apis():
+        print("--- Testing All XPrime Stream APIs ---")
 
         try:
             config, omdb_api_key = load_config_and_omdb_key()
@@ -171,42 +284,79 @@ if __name__ == "__main__":
             print(f"Error loading config: {e}")
             return
 
-        if not omdb_api_key:
-            print("OMDb API key not found. Using dummy metadata.")
-            # Create test metadata
-            test_metadata = MediaMetadata(
-                confirmed_title="The Matrix",
-                imdb_id="tt0133093",
-                year=1999,
-                director="Lana Wachowski, Lilly Wachowski",
-                genre="Action, Sci-Fi",
-            )
-            test_request = VideoRequest(title="The Matrix", destination_tv="any")
-        else:
+        # Test with a popular movie
+        test_title = "The Matrix"
+        test_year = 1999
+        test_description = "A popular movie to test all endpoints"
+
+        print(f"\n{'='*60}")
+        print(f"Testing: {test_title} ({test_year}) - {test_description}")
+        print(f"{'='*60}")
+
+        if omdb_api_key:
             # Get real metadata from OMDb
             async with httpx.AsyncClient() as client:
-                test_request = VideoRequest(title="The Matrix", destination_tv="any")
+                test_request = VideoRequest(
+                    title=test_title, year=test_year, destination_tv="any"
+                )
                 test_metadata = await get_media_metadata(
                     omdb_api_key, test_request, client
                 )
 
                 if not test_metadata:
-                    print("Failed to get metadata from OMDb")
+                    print(f"Failed to get metadata from OMDb for {test_title}")
                     return
+        else:
+            print("OMDb API key not found. Exiting test.")
+            return
 
-        # Test the XPrime API
+        # Test all three XPrime API variants
+        api_classes = [XPrimeMainAPI, XPrimeBackendAPI]
+
         async with httpx.AsyncClient() as client:
-            xprime_api = XPrimeStreamAPI(config=config, client=client)
-            print(f"\nSearching with {xprime_api.name}...")
+            for api_class in api_classes:
+                print(f"\n{'-'*50}")
+                api_instance = api_class(config=config, client=client)
+                print(f"Testing: {api_instance.name}")
+                print(f"Base URL: {api_instance.base_url}")
 
-            sources = await xprime_api.search_streams(test_metadata, test_request)
+                try:
+                    sources = await api_instance.search_streams(
+                        test_metadata, test_request
+                    )
 
-            if sources.sources:
-                print(f"\nFound {len(sources.sources)} stream(s):")
-                for i, stream in enumerate(sources.sources, 1):
-                    print(f"{i}. Quality: {stream.quality}, Type: {stream.media_type}")
-                    print(f"   URL: {stream.url[:80]}...")
-            else:
-                print("No streams found")
+                    print(f"Results Summary:")
+                    print(f"- Streams found: {len(sources.sources)}")
+                    print(f"- Search results: {len(sources.search_results)}")
 
-    asyncio.run(test_xprime())
+                    if sources.sources:
+                        print(f"\nFound {len(sources.sources)} stream(s):")
+                        for i, stream in enumerate(sources.sources, 1):
+                            print(
+                                f"{i}. Quality: {stream.quality}, Type: {stream.media_type}"
+                            )
+                            print(f"   URL: {stream.url[:80]}...")
+                    else:
+                        print("No streams found")
+
+                    # Display detailed search results
+                    print(f"\nDetailed Search Results:")
+                    for result in sources.search_results:
+                        status_icon = "✓" if result.success else "✗"
+                        print(f"{status_icon} {result.api_name}")
+                        print(f"  Message: {result.message}")
+                        if result.status:
+                            print(f"  Status: {result.status}")
+                        if result.error_details and not result.success:
+                            details = result.error_details
+                            if len(details) > 200:
+                                details = details[:200] + "..."
+                            print(f"  Details: {details}")
+
+                except Exception as e:
+                    print(f"Error testing {api_instance.name}: {e}")
+
+                # Add a small delay between API calls to avoid rate limiting
+                await asyncio.sleep(1)
+
+    asyncio.run(test_all_xprime_apis())

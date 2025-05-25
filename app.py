@@ -15,6 +15,7 @@ from datatypes import (
     RokuDevice,
     AppConfig,
     VideoSources,
+    SearchResult,
 )
 from config_manager import load_config_and_omdb_key
 from omdb_client import get_media_metadata
@@ -70,9 +71,21 @@ class StreamInfo(BaseModel):
     source_api: str
 
 
+class SearchResultInfo(BaseModel):
+    api_name: str
+    success: bool
+    streams_found: int
+    message: Optional[str] = None
+    status: Optional[str] = None
+    error_details: Optional[str] = None
+
+
 class SearchResponse(BaseModel):
     metadata: MediaMetadata
     streams: List[StreamInfo]
+    search_results: List[SearchResultInfo] = []
+    total_apis_searched: int = 0
+    successful_searches: int = 0
 
 
 class CastResponse(BaseModel):
@@ -80,6 +93,7 @@ class CastResponse(BaseModel):
     message: str
     metadata: Optional[MediaMetadata] = None
     stream_info: Optional[StreamInfo] = None
+    search_results: List[SearchResultInfo] = []
 
 
 class DeviceInfo(BaseModel):
@@ -197,6 +211,7 @@ async def search_movie(request: SearchRequest):
 
     # Search for streams using all available APIs
     all_streams = []
+    search_results = []
     for api_instance in video_source_apis:
         try:
             sources: VideoSources = await api_instance.search_streams(
@@ -211,10 +226,39 @@ async def search_movie(request: SearchRequest):
                         source_api=api_instance.name,
                     )
                 )
+
+            # Collect detailed search results from the API
+            for result in sources.search_results:
+                search_results.append(
+                    SearchResultInfo(
+                        api_name=result.api_name,
+                        success=result.success,
+                        streams_found=result.streams_found,
+                        message=result.message,
+                        status=result.status,
+                        error_details=result.error_details,
+                    )
+                )
         except Exception as e:
             print(f"Error searching with {api_instance.name}: {e}")
+            search_results.append(
+                SearchResultInfo(
+                    api_name=api_instance.name,
+                    success=False,
+                    streams_found=0,
+                    message=f"Exception during search: {str(e)}",
+                    status="EXCEPTION",
+                    error_details=str(e),
+                )
+            )
 
-    return SearchResponse(metadata=metadata, streams=all_streams)
+    return SearchResponse(
+        metadata=metadata,
+        streams=all_streams,
+        search_results=search_results,
+        total_apis_searched=len(video_source_apis),
+        successful_searches=len([r for r in search_results if r.success]),
+    )
 
 
 @app.post("/cast", response_model=CastResponse)
@@ -259,6 +303,7 @@ async def cast_movie(request: CastRequest):
 
     # Search for streams using all available APIs
     all_streams = []
+    search_results = []
     for api_instance in video_source_apis:
         try:
             sources: VideoSources = await api_instance.search_streams(
@@ -266,14 +311,38 @@ async def cast_movie(request: CastRequest):
             )
             for stream in sources.sources:
                 all_streams.append(stream)
+
+            # Collect detailed search results from the API
+            for result in sources.search_results:
+                search_results.append(
+                    SearchResultInfo(
+                        api_name=result.api_name,
+                        success=result.success,
+                        streams_found=result.streams_found,
+                        message=result.message,
+                        status=result.status,
+                        error_details=result.error_details,
+                    )
+                )
         except Exception as e:
             print(f"Error searching with {api_instance.name}: {e}")
+            search_results.append(
+                SearchResultInfo(
+                    api_name=api_instance.name,
+                    success=False,
+                    streams_found=0,
+                    message=f"Exception during search: {str(e)}",
+                    status="EXCEPTION",
+                    error_details=str(e),
+                )
+            )
 
     if not all_streams:
         return CastResponse(
             success=False,
             message="No video streams found for this movie",
             metadata=metadata,
+            search_results=search_results,
         )
 
     # Select the stream (use stream_index, default to 0)
@@ -298,6 +367,7 @@ async def cast_movie(request: CastRequest):
             message=f"Successfully initiated casting to {target_device.name}",
             metadata=metadata,
             stream_info=stream_info,
+            search_results=search_results,
         )
     else:
         return CastResponse(
@@ -305,7 +375,115 @@ async def cast_movie(request: CastRequest):
             message=f"Failed to cast to {target_device.name}",
             metadata=metadata,
             stream_info=stream_info,
+            search_results=search_results,
         )
+
+
+@app.post("/cast-background")
+async def cast_movie_background(
+    background_tasks: BackgroundTasks, request: CastRequest
+):
+    """Cast a movie to a Roku device in the background."""
+    if not omdb_api_key:
+        raise HTTPException(status_code=500, detail="OMDB API key not configured")
+
+    if not request.title and not request.imdb_id:
+        raise HTTPException(
+            status_code=400, detail="Either title or imdb_id must be provided"
+        )
+
+    # Find the target Roku device
+    target_device = None
+    for device in app_config.roku_devices:
+        if (
+            device.name == request.destination_tv
+            or device.ip_address == request.destination_tv
+        ):
+            target_device = device
+            break
+
+    if not target_device:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Roku device '{request.destination_tv}' not found in configuration",
+        )
+
+    # Add the casting task to background tasks
+    background_tasks.add_task(
+        perform_background_cast,
+        request,
+        target_device,
+        omdb_api_key,
+        http_client,
+        video_source_apis,
+    )
+
+    return {
+        "success": True,
+        "message": f"Casting task started in background for {target_device.name}",
+        "device": target_device.name,
+    }
+
+
+async def perform_background_cast(
+    request: CastRequest,
+    target_device: RokuDevice,
+    omdb_key: str,
+    client: httpx.AsyncClient,
+    apis: List[VideoSourceAPI],
+):
+    """Perform the actual casting operation in the background."""
+    try:
+        print(
+            f"[Background Cast] Starting cast for {request.title or request.imdb_id} to {target_device.name}"
+        )
+
+        # Create VideoRequest
+        video_req = VideoRequest(
+            title=request.title,
+            imdb_id=request.imdb_id,
+            year=request.year,
+            destination_tv=target_device.name,
+        )
+
+        # Get metadata from OMDb
+        metadata = await get_media_metadata(omdb_key, video_req, client)
+        if not metadata:
+            print(f"[Background Cast] Failed to get metadata from OMDb")
+            return
+
+        # Search for streams
+        all_streams = []
+        for api_instance in apis:
+            try:
+                sources: VideoSources = await api_instance.search_streams(
+                    metadata, video_req
+                )
+                all_streams.extend(sources.sources)
+            except Exception as e:
+                print(f"[Background Cast] Error with {api_instance.name}: {e}")
+
+        if not all_streams:
+            print(f"[Background Cast] No streams found for {metadata.confirmed_title}")
+            return
+
+        # Select stream and cast
+        stream_index = min(request.stream_index, len(all_streams) - 1)
+        selected_stream = all_streams[stream_index]
+
+        success = await cast_to_roku(selected_stream, target_device, app_config, client)
+
+        if success:
+            print(
+                f"[Background Cast] Successfully cast {metadata.confirmed_title} to {target_device.name}"
+            )
+        else:
+            print(
+                f"[Background Cast] Failed to cast {metadata.confirmed_title} to {target_device.name}"
+            )
+
+    except Exception as e:
+        print(f"[Background Cast] Unexpected error: {e}")
 
 
 if __name__ == "__main__":
